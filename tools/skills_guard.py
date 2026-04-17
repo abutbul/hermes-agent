@@ -497,7 +497,7 @@ MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
 
 # File extensions to scan (text files only — skip binary)
 SCANNABLE_EXTENSIONS = {
-    '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
+    '.md', '.txt', '.py', '.sh', '.bash', '.js', '.mjs', '.ts', '.rb',
     '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
     '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
 }
