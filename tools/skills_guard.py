@@ -27,7 +27,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Set
 
 
 
@@ -37,6 +37,11 @@ from typing import List, Tuple
 # ---------------------------------------------------------------------------
 
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
+
+# Optional signer fingerprint allowlist. A verified signature from one of these
+# fingerprints elevates trust to "trusted" even when the source name is
+# otherwise community.
+TRUSTED_SIGNER_FINGERPRINTS: Set[str] = set()
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
@@ -73,6 +78,8 @@ class ScanResult:
     findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
+    signer_fingerprint: str = ""
+    signature_valid: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +599,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(
+    skill_path: Path,
+    source: str = "community",
+    signer_fingerprint: Optional[str] = None,
+    signature_valid: Optional[bool] = None,
+) -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
 
@@ -604,12 +616,19 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
         source: Source identifier for trust level resolution (e.g. "openai/skills")
+        signer_fingerprint: Optional signer fingerprint for registry-provided signatures
+        signature_valid: Signature verification result. Only valid + trusted signer elevates trust.
 
     Returns:
         ScanResult with verdict, findings, and trust metadata
     """
     skill_name = skill_path.name
-    trust_level = _resolve_trust_level(source)
+    normalized_signer_fingerprint = _normalize_signer_fingerprint(signer_fingerprint)
+    trust_level = _resolve_trust_level(
+        source,
+        signer_fingerprint=normalized_signer_fingerprint,
+        signature_valid=signature_valid,
+    )
 
     all_findings: List[Finding] = []
 
@@ -636,6 +655,8 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         findings=all_findings,
         scanned_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
+        signer_fingerprint=normalized_signer_fingerprint,
+        signature_valid=signature_valid,
     )
 
 
@@ -650,6 +671,18 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     Returns:
         (allowed, reason) tuple
     """
+    signer_fp = _normalize_signer_fingerprint(result.signer_fingerprint)
+
+    # Signature verification was attempted and failed.
+    # Fail closed on integrity failure regardless of signer metadata or force.
+    if result.signature_valid is False:
+        if signer_fp:
+            return False, (
+                f"Blocked (invalid signature for signer {signer_fp[:12]}..., "
+                "integrity verification failed)."
+            )
+        return False, "Blocked (invalid signature, integrity verification failed)."
+
     policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])
     vi = VERDICT_INDEX.get(result.verdict, 2)
     decision = policy[vi]
@@ -877,8 +910,27 @@ def _unicode_char_name(char: str) -> str:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_trust_level(source: str) -> str:
-    """Map a source identifier to a trust level."""
+def _normalize_signer_fingerprint(signer_fingerprint: Optional[str]) -> str:
+    """Normalize signer fingerprint values for comparisons."""
+    if not signer_fingerprint:
+        return ""
+    return str(signer_fingerprint).strip().lower()
+
+
+def _resolve_trust_level(
+    source: str,
+    signer_fingerprint: Optional[str] = None,
+    signature_valid: Optional[bool] = None,
+) -> str:
+    """Map a source identifier and signature metadata to a trust level."""
+    normalized_signer_fingerprint = _normalize_signer_fingerprint(signer_fingerprint)
+    if (
+        normalized_signer_fingerprint
+        and signature_valid is True
+        and normalized_signer_fingerprint in TRUSTED_SIGNER_FINGERPRINTS
+    ):
+        return "trusted"
+
     prefix_aliases = (
         "skills-sh/",
         "skills.sh/",
